@@ -118,9 +118,7 @@ def get_current_team(get_doc=False):
 	# `team_name` getting injected by press.saas.api.whitelist_saas_api decorator
 	team = x_press_team if x_press_team else getattr(frappe.local, "team_name", "")
 
-	user_is_press_admin = frappe.db.exists("Has Role", {"parent": frappe.session.user, "role": "Press Admin"})
-
-	if not team and user_is_press_admin and frappe.db.exists("Team", {"user": frappe.session.user}):
+	if not team and has_role("Press Admin") and frappe.db.exists("Team", {"user": frappe.session.user}):
 		# if user has_role of Press Admin then just return current user as default team
 		return (
 			frappe.get_doc("Team", {"user": frappe.session.user, "enabled": 1})
@@ -927,11 +925,12 @@ def timer(f):
 
 def validate_subdomain(subdomain: str):
 	site_regex = r"^[a-z0-9][a-z0-9-]*[a-z0-9]$"
+	if not subdomain:
+		frappe.throw("Subdomain is required to create a site.")
 	if not re.match(site_regex, subdomain):
 		frappe.throw("Subdomain contains invalid characters. Use lowercase characters, numbers and hyphens")
 	if len(subdomain) > 32:
 		frappe.throw("Subdomain too long. Use 32 or less characters")
-
 	if len(subdomain) < 5:
 		frappe.throw("Subdomain too short. Use 5 or more characters")
 
