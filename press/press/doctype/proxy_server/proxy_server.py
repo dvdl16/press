@@ -49,6 +49,7 @@ class ProxyServer(BaseServer):
 		is_self_hosted: DF.Check
 		is_server_setup: DF.Check
 		is_ssh_proxy_setup: DF.Check
+		is_static_ip: DF.Check
 		is_wireguard_setup: DF.Check
 		primary: DF.Link | None
 		private_ip: DF.Data | None
@@ -226,12 +227,15 @@ class ProxyServer(BaseServer):
 
 	def _setup_proxysql(self):
 		try:
-			default_hostgroup = frappe.get_all(
-				"Database Server",
-				"MIN(server_id)",
-				{"status": "Active", "cluster": self.cluster},
-				as_list=True,
-			)[0][0]
+			default_hostgroup = (
+				frappe.get_all(
+					"Database Server",
+					"MIN(server_id)",
+					{"status": "Active", "cluster": self.cluster},
+					as_list=True,
+				)[0][0]
+				or 0
+			)
 			ansible = Ansible(
 				playbook="proxysql.yml",
 				server=self,

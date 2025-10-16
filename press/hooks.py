@@ -319,11 +319,13 @@ scheduler_events = {
 			"press.saas.doctype.site_access_token.site_access_token.cleanup_expired_access_tokens",
 			"press.press.doctype.server_snapshot.server_snapshot.sync_ongoing_server_snapshots",
 			"press.press.doctype.site.site.create_subscription_for_trial_sites",
+			"press.press.doctype.dashboard_banner.dashboard_banner.run_scheduled_publish_unpublish",
 		],
 		"*/10 * * * *": [
 			"press.saas.doctype.product_trial.product_trial.replenish_standby_sites",
 			"press.press.doctype.site.saas_pool.create",
 			"press.press.doctype.virtual_disk_snapshot.virtual_disk_snapshot.sync_rolling_snapshots",
+			"press.press.doctype.database_server.database_server.auto_purge_binlogs_by_size_limit",
 		],
 		"*/30 * * * *": [
 			"press.press.doctype.site_update.scheduled_auto_updates.trigger",
