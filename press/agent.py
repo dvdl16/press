@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
 	from press.press.doctype.agent_job.agent_job import AgentJob
 	from press.press.doctype.app_patch.app_patch import AgentPatchConfig, AppPatch
+	from press.press.doctype.bench.bench import Bench
 	from press.press.doctype.database_server.database_server import DatabaseServer
 	from press.press.doctype.physical_backup_restoration.physical_backup_restoration import (
 		PhysicalBackupRestoration,
@@ -52,7 +53,7 @@ class Agent:
 		self.server = server
 		self.port = 443 if self.server not in servers_using_alternative_port_for_communication() else 8443
 
-	def new_bench(self, bench):
+	def new_bench(self, bench: "Bench"):
 		settings = frappe.db.get_value(
 			"Press Settings",
 			None,

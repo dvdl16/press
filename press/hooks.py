@@ -189,6 +189,7 @@ scheduler_events = {
 		"press.press.doctype.database_server.database_server.remove_uploaded_binlogs_from_s3",
 		"press.press.doctype.mariadb_binlog.mariadb_binlog.cleanup_old_records",
 		"press.press.doctype.database_server.database_server.delete_mariadb_binlog_for_archived_servers",
+		"press.press.doctype.team.team.check_budget_alerts",
 	],
 	"daily_long": [
 		"press.press.audit.check_bench_fields",
@@ -301,6 +302,7 @@ scheduler_events = {
 			"press.press.doctype.virtual_machine.virtual_machine.sync_virtual_machines",
 			"press.press.doctype.mariadb_stalk.mariadb_stalk.fetch_stalks",
 			"press.press.doctype.virtual_machine.virtual_machine.rolling_snapshot_database_server_virtual_machines",
+			"press.infrastructure.doctype.virtual_disk_resize.virtual_disk_resize.run_scheduled_resizes",
 		],
 		"*/5 * * * *": [
 			"press.press.doctype.version_upgrade.version_upgrade.update_from_site_update",
@@ -319,7 +321,6 @@ scheduler_events = {
 			"press.saas.doctype.site_access_token.site_access_token.cleanup_expired_access_tokens",
 			"press.press.doctype.server_snapshot.server_snapshot.sync_ongoing_server_snapshots",
 			"press.press.doctype.site.site.create_subscription_for_trial_sites",
-			"press.press.doctype.dashboard_banner.dashboard_banner.run_scheduled_publish_unpublish",
 		],
 		"*/10 * * * *": [
 			"press.saas.doctype.product_trial.product_trial.replenish_standby_sites",
