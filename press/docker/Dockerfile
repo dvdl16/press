@@ -58,6 +58,9 @@ RUN --mount=type=cache,target=/var/cache/apt apt-get update \
   libcups2-dev \
   # s3-attachment dependencies
   libmagic1 \
+  && if [ -n "$REQUIRE_LIBREOFFICE" ]; then \
+    apt-get install --yes --no-install-suggests --no-install-recommends libreoffice; \
+  fi \
   && rm -rf /var/lib/apt/lists/* \
   `#stage-pre-essentials`
 
