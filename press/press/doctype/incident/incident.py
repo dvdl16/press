@@ -665,8 +665,6 @@ Incident URL: {incident_link}"""
 
 		server_title_encoded = urllib.parse.quote(server_title)
 
-		# TODO Better message for Disk Full incidents
-
 		press_public_base_url = frappe.utils.get_url()
 		twilio_client.calls.create(
 			url=f"{press_public_base_url}/api/method/press.api.message.confirmed_incident?server_title={server_title_encoded}",
@@ -737,6 +735,7 @@ Incident URL: {incident_link}"""
 	def resolve(self):
 		if self.status == "Validating":
 			self.status = "Auto-Resolved"
+			self.take_grafana_screenshots()
 		else:
 			self.status = "Resolved"
 		self.save()

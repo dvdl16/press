@@ -6,6 +6,7 @@ import base64
 import ipaddress
 import time
 import typing
+from functools import cached_property
 
 import boto3
 import botocore
@@ -17,7 +18,7 @@ from frappe.model.document import Document
 from frappe.model.naming import make_autoname
 from frappe.utils.password import get_decrypted_password
 from hcloud import APIException, Client
-from hcloud.images import Image
+from hcloud.images.domain import Image
 from hcloud.servers.domain import ServerCreatePublicNetwork
 from oci import pagination as oci_pagination
 from oci.core import BlockstorageClient, ComputeClient, VirtualNetworkClient
@@ -36,8 +37,6 @@ from oci.core.models import (
 	UpdateVolumeDetails,
 )
 from oci.exceptions import TransientServiceError
-from tenacity import retry, stop_after_attempt, wait_fixed
-from tenacity.retry import retry_if_not_result
 
 from press.overrides import get_permission_query_conditions_for_doctype
 from press.press.doctype.server_activity.server_activity import log_server_activity
@@ -45,8 +44,6 @@ from press.utils import log_error
 from press.utils.jobs import has_job_timeout_exceeded
 
 if typing.TYPE_CHECKING:
-	from hcloud.servers.client import BoundServer
-
 	from press.infrastructure.doctype.virtual_machine_migration.virtual_machine_migration import (
 		VirtualMachineMigration,
 	)
@@ -60,7 +57,11 @@ server_doctypes = [
 	"Proxy Server",
 	"Monitor Server",
 	"Log Server",
+	"NFS Server",
 ]
+
+HETZNER_ROOT_DISK_ID = "hetzner-root-disk"
+HETZNER_ACTION_TIMEOUT = 60  # seconds; shouldn't be longer than default RQ job timeout of 300 seconds
 
 
 class VirtualMachine(Document):
@@ -210,11 +211,13 @@ class VirtualMachine(Document):
 			frappe.delete_doc("Virtual Machine Image", image)
 
 	def on_update(self):
-		if self.has_value_changed("has_data_volume"):
-			server = self.get_server()
-			if server:
-				server.has_data_volume = self.has_data_volume
-				server.save()
+		server = self.get_server()
+		if server and server.doctype == "NFS Server":
+			return
+
+		if self.has_value_changed("has_data_volume") and server:
+			server.has_data_volume = self.has_data_volume
+			server.save()
 
 		if self.has_value_changed("disk_size") and self.should_bill_addon_storage():
 			self.update_subscription_for_addon_storage()
@@ -327,61 +330,86 @@ class VirtualMachine(Document):
 
 		return False
 
+	def _handle_updated_addon_storage(self, server: Server, increment: int) -> None:
+		if frappe.db.exists(
+			"Subscription",
+			{"document_name": server.name, "team": server.team, "plan_type": "Server Storage Plan"},
+		):
+			# update the existing subscription
+			frappe.db.set_value(
+				"Subscription",
+				{
+					"document_name": server.name,
+					"team": server.team,
+					"plan_type": "Server Storage Plan",
+				},
+				{
+					"additional_storage": increment,
+					"enabled": 1,
+				},
+			)
+		else:
+			# create a new subscription
+			frappe.get_doc(
+				doctype="Subscription",
+				team=server.team,
+				plan_type="Server Storage Plan",
+				plan="Add-on Storage plan",
+				document_type=server.doctype,
+				document_name=server.name,
+				additional_storage=increment,
+				enabled=1,
+			).insert()
+
+	def _plan_change_addon_storage(self, server: Server) -> None:
+		if frappe.db.exists(
+			"Subscription",
+			{"document_name": server.name, "team": server.team, "plan_type": "Server Storage Plan"},
+		):
+			frappe.db.set_value(
+				"Subscription",
+				{
+					"document_name": server.name,
+					"team": server.team,
+					"plan_type": "Server Storage Plan",
+				},
+				"enabled",
+				0,
+			)
+
+	def update_subscription_for_nfs_addon_storage(self, volume: "VirtualMachineVolume") -> None:
+		"""Handle subscriptions for primary servers and their nfs server"""
+		primary_server = frappe.db.get_value(
+			"NFS Volume Attachment", {"volume_id": volume.volume_id}, "primary_server"
+		)
+		primary_server: Server = frappe.get_doc("Server", primary_server)
+		server_plan_disk_size = frappe.db.get_value("Server Plan", primary_server.plan, "disk")
+
+		if volume.size == server_plan_disk_size:
+			self._plan_change_addon_storage(primary_server)
+
+		if volume.size > server_plan_disk_size:
+			increment = volume.size - server_plan_disk_size
+			self._handle_updated_addon_storage(primary_server, increment)
+
 	def update_subscription_for_addon_storage(self):
+		"""Update subscription record"""
 		server = self.get_server()
-		if not server:
+
+		if not server or server.doctype == "NFS Server":
 			return
+
 		server_plan_size = frappe.db.get_value("Server Plan", server.plan, "disk")
 
 		if server_plan_size and self.disk_size > server_plan_size:
 			# Add on storage was added or updated
 			increment = self.disk_size - server_plan_size
-			if frappe.db.exists(
-				"Subscription",
-				{"document_name": server.name, "team": server.team, "plan_type": "Server Storage Plan"},
-			):
-				# update the existing subscription
-				frappe.db.set_value(
-					"Subscription",
-					{
-						"document_name": server.name,
-						"team": server.team,
-						"plan_type": "Server Storage Plan",
-					},
-					{
-						"additional_storage": increment,
-						"enabled": 1,
-					},
-				)
-			else:
-				# create a new subscription
-				frappe.get_doc(
-					doctype="Subscription",
-					team=server.team,
-					plan_type="Server Storage Plan",
-					plan="Add-on Storage plan",
-					document_type=server.doctype,
-					document_name=server.name,
-					additional_storage=increment,
-					enabled=1,
-				).insert()
+			self._handle_updated_addon_storage(server, increment)
 		elif self.disk_size == server_plan_size:
 			# Server was upgraded or downgraded from plan change
 			# Remove the existing add-on storage subscription
-			if frappe.db.exists(
-				"Subscription",
-				{"document_name": server.name, "team": server.team, "plan_type": "Server Storage Plan"},
-			):
-				frappe.db.set_value(
-					"Subscription",
-					{
-						"document_name": server.name,
-						"team": server.team,
-						"plan_type": "Server Storage Plan",
-					},
-					"enabled",
-					0,
-				)
+			self._plan_change_addon_storage(server)
+		return
 
 	@frappe.whitelist()
 	def provision(self):
@@ -420,10 +448,6 @@ class VirtualMachine(Document):
 			user_data=self.get_cloud_init() if self.virtual_machine_image else "",
 		)
 		server = server_response.server
-		# We assign only one private IP, so should be fine
-		self.private_ip_address = server.private_net[0].ip
-		self.public_ip_address = server.public_net.ipv4.ip
-
 		self.instance_id = server.id
 
 		self.status = self.get_hetzner_status_map()[server.status]
@@ -609,10 +633,13 @@ class VirtualMachine(Document):
 			),
 		}
 		if server.doctype == "Database Server":
+			memory = frappe.db.get_value("Server Plan", server.plan, "memory") or 1024
+			if memory < 1024:
+				frappe.throw("MariaDB cannot be installed on a server plan with less than 1GB RAM.")
 			mariadb_context = {
 				"server_id": server.server_id,
 				"private_ip": self.private_ip_address,
-				"ansible_memtotal_mb": frappe.db.get_value("Server Plan", server.plan, "memory") or 1024,
+				"ansible_memtotal_mb": memory,
 				"mariadb_root_password": server.get_password("mariadb_root_password"),
 			}
 
@@ -726,15 +753,14 @@ class VirtualMachine(Document):
 		elif self.cloud_provider == "OCI":
 			self.client().instance_action(instance_id=self.instance_id, action="RESET")
 		elif self.cloud_provider == "Hetzner":
-			server_instance = self.client().servers.get_by_id(self.instance_id)
-			self.client().servers.reboot(server_instance)
+			self.client().servers.reboot(self.server_instance)
 
-		log_server_activity(self.series, self.name, action="Reboot")
+		log_server_activity(self.series, self.get_server().name, action="Reboot")
 
 		self.sync()
 
 	@frappe.whitelist()
-	def increase_disk_size(self, volume_id=None, increment=50):
+	def increase_disk_size(self, volume_id=None, increment=50):  # noqa: C901
 		if not increment:
 			return
 		if not volume_id:
@@ -748,6 +774,10 @@ class VirtualMachine(Document):
 		volume.last_updated_at = frappe.utils.now_datetime()
 		if self.cloud_provider == "AWS EC2":
 			self.client().modify_volume(VolumeId=volume.volume_id, Size=volume.size)
+			server = self.get_server()
+			if server.doctype == "NFS Server":
+				self.update_subscription_for_nfs_addon_storage(volume)
+
 		elif self.cloud_provider == "OCI":
 			if ".bootvolume." in volume.volume_id:
 				self.client(BlockstorageClient).update_boot_volume(
@@ -760,14 +790,14 @@ class VirtualMachine(Document):
 					update_volume_details=UpdateVolumeDetails(size_in_gbs=volume.size),
 				)
 		elif self.cloud_provider == "Hetzner":
-			if volume_id == "hetzner-root-disk":
+			if volume_id == HETZNER_ROOT_DISK_ID:
 				frappe.throw("Cannot increase disk size for hetzner root disk.")
 			volume = self.client().volumes.get_by_id(volume_id)
 			self.client().volumes.resize(volume, increment)
 
 		log_server_activity(
 			self.series,
-			self.name,
+			server=self.get_server().name,
 			action="Disk Size Change",
 			reason=f"{'Root' if is_root_volume else 'Data'} volume increased by {increment} GB",
 		)
@@ -798,9 +828,8 @@ class VirtualMachine(Document):
 				.data
 			)
 		if self.cloud_provider == "Hetzner":
-			server_instance = self.client().servers.get_by_id(self.instance_id)
 			volumes = []
-			for volume in server_instance.volumes:
+			for volume in self.server_instance.volumes:
 				volume = self.client().volumes.get_by_id(volume.id)
 				volumes.append(volume)
 
@@ -809,9 +838,9 @@ class VirtualMachine(Document):
 			volumes.append(
 				frappe._dict(
 					{
-						"id": "hetzner-root-disk",
+						"id": HETZNER_ROOT_DISK_ID,
 						"linux_device": "/dev/sda",
-						"size": server_instance.primary_disk_size,
+						"size": self.server_instance.primary_disk_size,
 						"protection": {"delete": False},
 					}
 				)
@@ -848,21 +877,22 @@ class VirtualMachine(Document):
 		return None
 
 	def _sync_hetzner(self, server_instance=None):
-		is_deleted = False
 		if not server_instance:
 			try:
-				server_instance = self.client().servers.get_by_id(self.instance_id)
+				server_instance = self.server_instance
 			except APIException as e:
 				if "server not found" in str(e):
-					frappe.throw(f"{self.name}: Server not found")
-				is_deleted = True
-		if server_instance and not is_deleted:
+					pass
+				else:
+					raise e
+		if server_instance:
 			self.status = self.get_hetzner_status_map()[server_instance.status]
 			self.machine_type = server_instance.server_type.name
 			self.private_ip_address = server_instance.private_net[0].ip
 			self.public_ip_address = server_instance.public_net.ipv4.ip
 
-			existing_volumes = [(vol.volume_id) for vol in self.volumes]
+			existing_volumes = [vol.volume_id for vol in self.volumes]
+			self.has_data_volume = 0
 			for volume in self.get_volumes():
 				if str(volume.id) in existing_volumes:
 					continue
@@ -871,13 +901,10 @@ class VirtualMachine(Document):
 				row.size = volume.size
 				row.device = volume.linux_device
 				self.append("volumes", row)
-
-			if volume.protection["delete"]:
-				self.termination_protection = volume.protection["delete"]
+				self.has_data_volume = 1
 
 			self.vcpu = server_instance.server_type.cores
-			self.ram = server_instance.server_type.memory
-			self.has_data_volume = 1
+			self.ram = server_instance.server_type.memory * 1024
 		else:
 			self.status = "Terminated"
 		self.save()
@@ -1245,11 +1272,7 @@ class VirtualMachine(Document):
 				InstanceId=self.instance_id, DisableApiTermination={"Value": False}
 			)
 		elif self.cloud_provider == "Hetzner":
-			for volume in self.volumes:
-				volume = self.client().volumes.get_by_id(volume.volume_id)
-				self.termination_protection = self.client().volumes.change_protection(
-					volume=volume, delete=False
-				)
+			self.server_instance.change_protection(delete=False)
 		self.sync()
 
 	@frappe.whitelist()
@@ -1259,11 +1282,7 @@ class VirtualMachine(Document):
 				InstanceId=self.instance_id, DisableApiTermination={"Value": True}
 			)
 		elif self.cloud_provider == "Hetzner":
-			for volume in self.volumes:
-				volume = self.client().volumes.get_by_id(volume.volume_id)
-				self.termination_protection = self.client().volumes.change_protection(
-					volume=volume, delete=False
-				)
+			self.server_instance.change_protection(delete=True, rebuild=True)
 		self.sync()
 
 	@frappe.whitelist()
@@ -1273,8 +1292,7 @@ class VirtualMachine(Document):
 		elif self.cloud_provider == "OCI":
 			self.client().instance_action(instance_id=self.instance_id, action="START")
 		elif self.cloud_provider == "Hetzner":
-			server_instance = self.client().servers.get_by_id(self.instance_id)
-			self.client().servers.power_on(server_instance)
+			self.client().servers.power_on(self.server_instance)
 		self.sync()
 
 	@frappe.whitelist()
@@ -1284,8 +1302,7 @@ class VirtualMachine(Document):
 		elif self.cloud_provider == "OCI":
 			self.client().instance_action(instance_id=self.instance_id, action="STOP")
 		elif self.cloud_provider == "Hetzner":
-			server_instance = self.client().servers.get_by_id(self.instance_id)
-			self.client().servers.shutdown(server_instance)
+			self.client().servers.shutdown(self.server_instance)
 		self.sync()
 
 	@frappe.whitelist()
@@ -1309,10 +1326,15 @@ class VirtualMachine(Document):
 		elif self.cloud_provider == "OCI":
 			self.client().terminate_instance(instance_id=self.instance_id)
 		elif self.cloud_provider == "Hetzner":
-			server_instance = self.client().servers.get_by_id(self.instance_id)
-			self.client().servers.delete(server_instance)
+			for volume in self.volumes:
+				if volume.volume_id == HETZNER_ROOT_DISK_ID:
+					continue
+				volume = self.client().volumes.get_by_id(volume.volume_id)
+				volume.detach().wait_until_finished(HETZNER_ACTION_TIMEOUT)
+				volume.delete()
+			self.client().servers.delete(self.server_instance)
 
-		log_server_activity(self.series, self.name, action="Terminated")
+		log_server_activity(self.series, self.get_server().name, action="Terminated")
 
 	@frappe.whitelist()
 	def resize(self, machine_type):
@@ -1552,7 +1574,7 @@ class VirtualMachine(Document):
 
 		log_server_activity(
 			self.series,
-			self.name,
+			self.get_server().name,
 			action="Reboot",
 			reason="Unable to reboot manually, rebooting with serial console",
 		)
@@ -1773,7 +1795,7 @@ class VirtualMachine(Document):
 		if log_activity:
 			log_server_activity(
 				self.series,
-				self.name,
+				self.get_server().name,
 				action="Volume",
 				reason="Volume attached on server",
 			)
@@ -1818,17 +1840,11 @@ class VirtualMachine(Document):
 			if e.response.get("Error", {}).get("Code") == "InvalidVolumeModification.NotFound":
 				return None
 
-	@retry(
-		retry=retry_if_not_result(lambda result: result is True),
-		wait=wait_fixed(1),
-		stop=stop_after_attempt(30),
-	)
-	def wait_for_detach(self, server: BoundServer):
-		# TODO: Delete this method
+	@cached_property
+	def server_instance(self):
 		if self.cloud_provider != "Hetzner":
 			raise NotImplementedError
-		server.reload()
-		return bool(server.private_net)
+		return self.client().servers.get_by_id(self.instance_id)
 
 	def correct_private_ip(self):
 		"""
@@ -1839,26 +1855,23 @@ class VirtualMachine(Document):
 		if self.cloud_provider != "Hetzner":
 			raise NotImplementedError
 		vpc_id = frappe.db.get_value("Cluster", self.cluster, "vpc_id")
-		server = self.client().servers.get_by_id(self.instance_id)
 		network = self.client().networks.get_by_id(vpc_id)
 		try:
-			action = server.detach_from_network(network)
+			self.server_instance.detach_from_network(network).wait_until_finished(HETZNER_ACTION_TIMEOUT)
 		except APIException as e:  # for retry
 			if "resource not found" in str(e):
 				pass
 			else:
 				raise e
-		else:
-			action.wait_until_finished(30)
 		try:
-			action = server.attach_to_network(network, ip=self.get_private_ip())
+			self.server_instance.attach_to_network(network, ip=self.get_private_ip()).wait_until_finished(
+				HETZNER_ACTION_TIMEOUT
+			)
 		except APIException as e:
 			if "already attached" in str(e):
 				pass
 			else:
 				raise e
-		else:
-			action.wait_until_finished(30)
 		self.sync()
 
 	@frappe.whitelist()
@@ -1882,13 +1895,12 @@ class VirtualMachine(Document):
 		elif self.cloud_provider == "OCI":
 			raise NotImplementedError
 		elif self.cloud_provider == "Hetzner":
-			server_instance = self.client().servers.get_by_id(self.instance_id)
 			new_volume = self.client().volumes.create(
 				size=size,
 				name=f"{self.name}-vol-{len(self.volumes) + len(self.temporary_volumes) + 1}",
 				format="ext4",
 				automount=False,
-				server=server_instance,
+				server=self.server_instance,
 			)
 			"""
 			This is a temporary assignment of linux_device from Hetzner API to
@@ -1896,9 +1908,9 @@ class VirtualMachine(Document):
 			Example: linux_device = /mnt/HC_Volume_103061048
 			"""
 			device_name = new_volume.volume.linux_device
-			new_volume.action.wait_until_finished(30)  # wait until volume is created
+			new_volume.action.wait_until_finished(HETZNER_ACTION_TIMEOUT)  # wait until volume is created
 			for action in new_volume.next_actions:
-				action.wait_until_finished(30)  # wait until volume is attached
+				action.wait_until_finished(HETZNER_ACTION_TIMEOUT)  # wait until volume is attached
 		self.save()
 		self.sync()
 		return device_name
@@ -1927,7 +1939,7 @@ class VirtualMachine(Document):
 		elif self.cloud_provider == "OCI":
 			raise NotImplementedError
 		elif self.cloud_provider == "Hetzner":
-			if volume_id == "hetzner-root-disk":
+			if volume_id == HETZNER_ROOT_DISK_ID:
 				frappe.throw("Cannot detach hetzner root disk.")
 			volume = self.client().volumes.get_by_id(volume_id)
 			self.client().volumes.detach(volume)
@@ -1947,7 +1959,7 @@ class VirtualMachine(Document):
 			if self.cloud_provider == "OCI":
 				raise NotImplementedError
 			if self.cloud_provider == "Hetzner":
-				if volume_id == "hetzner-root-disk":
+				if volume_id == HETZNER_ROOT_DISK_ID:
 					frappe.throw("Cannot delete hetzner root disk.")
 				vol = self.client().volumes.get_by_id(volume_id)
 				self.client().volumes.delete(vol)
@@ -1959,10 +1971,27 @@ class VirtualMachine(Document):
 get_permission_query_conditions = get_permission_query_conditions_for_doctype("Virtual Machine")
 
 
+def sync_virtual_machines_hetzner():
+	for machine in frappe.get_all(
+		"Virtual Machine",
+		{"status": ("not in", ("Draft")), "cloud_provider": "Hetzner"},
+		pluck="name",
+	):
+		if has_job_timeout_exceeded():
+			return
+		try:
+			VirtualMachine("Virtual Machine", machine).sync()
+			frappe.db.commit()  # release lock
+		except Exception:
+			log_error(title="Virtual Machine Sync Error", virtual_machine=machine)
+			frappe.db.rollback()
+
+
 @frappe.whitelist()
 def sync_virtual_machines():
 	VirtualMachine.bulk_sync_aws()
 	VirtualMachine.bulk_sync_oci()
+	sync_virtual_machines_hetzner()
 
 
 def snapshot_oci_virtual_machines():

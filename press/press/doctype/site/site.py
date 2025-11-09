@@ -48,6 +48,7 @@ from press.marketplace.doctype.marketplace_app_plan.marketplace_app_plan import 
 	MarketplaceAppPlan,
 )
 from press.press.doctype.communication_info.communication_info import get_communication_info
+from press.saas.doctype.product_trial.product_trial import create_free_app_subscription
 from press.utils.jobs import has_job_timeout_exceeded
 from press.utils.telemetry import capture
 from press.utils.webhook import create_webhook_event
@@ -745,6 +746,8 @@ class Site(Document, TagHelpers):
 	def install_marketplace_conf(self, app: str, plan: str | None = None):
 		if plan:
 			MarketplaceAppPlan.create_marketplace_app_subscription(self.name, app, plan, self.team)
+		else:
+			create_free_app_subscription(app, self.name)
 		marketplace_app_hook(app=app, site=self, op="install")
 
 	def uninstall_marketplace_conf(self, app: str):
@@ -1653,7 +1656,7 @@ class Site(Document, TagHelpers):
 
 	@dashboard_whitelist()
 	@site_action(["Active", "Broken"])
-	@action_guard(SiteActions.LOGIN_AS_ADMINISTRATOR)
+	@action_guard(SiteActions.LoginAsAdmin)
 	def login_as_admin(self, reason=None):
 		sid = self.login(reason=reason)
 		return f"https://{self.host_name or self.name}/app?sid={sid}"
@@ -2135,6 +2138,20 @@ class Site(Document, TagHelpers):
 				f'You <a class="underline" href="https://docs.frappe.io/cloud/enable-server-script">cannot enable server scripts</a> on public benches. Please move to a <a class="underline" href="{PRIVATE_BENCH_DOC}">private bench</a>.'
 			)
 
+	def validate_encryption_key(self, key: str, value: Any):
+		if key != "encryption_key":
+			return
+		from cryptography.fernet import Fernet, InvalidToken
+
+		try:
+			Fernet(value)
+		except (ValueError, InvalidToken):
+			frappe.throw(
+				_(
+					"This is not a valid encryption key. Please copy it exactly. Read <a href='https://docs.frappe.io/cloud/sites/migrate-an-existing-site#encryption-key' class='underline' target='_blank'>here</a> if you have lost the encryption key."
+				)
+			)
+
 	@dashboard_whitelist()
 	@site_action(["Active"])
 	def update_config(self, config=None):
@@ -2149,6 +2166,7 @@ class Site(Document, TagHelpers):
 			if key in get_client_blacklisted_keys():
 				frappe.throw(_(f"The key <b>{key}</b> is blacklisted or internal and cannot be updated"))
 			self.check_server_script_enabled_on_public_bench(key)
+			self.validate_encryption_key(key, value)
 
 			_type = self._site_config_key_type(key, value)
 
@@ -2268,9 +2286,7 @@ class Site(Document, TagHelpers):
 		result = {"enabled": False, "reason": "", "solution": ""}
 
 		# First validate DNS records
-		dns_result = check_dns_cname_a(
-			self.name, self.host_name, throw_error=False, throw_proxy_validation_early=False
-		)
+		dns_result = check_dns_cname_a(self.name, self.host_name, throw_error=False)
 		if not dns_result.get("valid"):
 			msg = f"DNS record of {self.host_name} are not pointing correctly\n"
 			msg += f"  Type: {dns_result.get('exc_type')}\n"
@@ -3083,7 +3099,7 @@ class Site(Document, TagHelpers):
 	def get_sites_for_backup(
 		cls, interval: int, backup_type: Literal["Logical", "Physical"] = "Logical"
 	) -> list[dict]:
-		sites = cls.get_sites_without_backup_in_interval(interval)
+		sites = cls.get_sites_without_backup_in_interval(interval, backup_type)
 		servers_with_backups = frappe.get_all(
 			"Server",
 			{"status": "Active", "skip_scheduled_backups": False},
@@ -3110,7 +3126,9 @@ class Site(Document, TagHelpers):
 		)
 
 	@classmethod
-	def get_sites_without_backup_in_interval(cls, interval: int) -> list[str]:
+	def get_sites_without_backup_in_interval(
+		cls, interval: int, backup_type: Literal["Logical", "Physical"] = "Logical"
+	) -> list[str]:
 		"""Return active sites that haven't had backup taken in interval hours."""
 		interval_hrs_ago = frappe.utils.add_to_date(None, hours=-interval)
 		all_sites = set(
@@ -3127,30 +3145,36 @@ class Site(Document, TagHelpers):
 		)
 		return list(
 			all_sites
-			- set(cls.get_sites_with_backup_in_interval(interval_hrs_ago))
-			- set(cls.get_sites_with_pending_backups(interval_hrs_ago))
+			- set(cls.get_sites_with_backup_in_interval(interval_hrs_ago, backup_type))
+			- set(cls.get_sites_with_pending_backups(interval_hrs_ago, backup_type))
 		)
 		# TODO: query using creation time of account request for actual new sites <03-09-21, Balamurali M> #
 
 	@classmethod
-	def get_sites_with_pending_backups(cls, interval_hrs_ago: datetime) -> list[str]:
+	def get_sites_with_pending_backups(
+		cls, interval_hrs_ago: datetime, backup_type: Literal["Logical", "Physical"] = "Logical"
+	) -> list[str]:
 		return frappe.get_all(
 			"Site Backup",
 			{
 				"status": ("in", ["Running", "Pending"]),
 				"creation": (">=", interval_hrs_ago),
+				"physical": bool(backup_type == "Physical"),
 			},
 			pluck="site",
 		)
 
 	@classmethod
-	def get_sites_with_backup_in_interval(cls, interval_hrs_ago) -> list[str]:
+	def get_sites_with_backup_in_interval(
+		cls, interval_hrs_ago, backup_type: Literal["Logical", "Physical"] = "Logical"
+	) -> list[str]:
 		return frappe.get_all(
 			"Site Backup",
 			{
 				"creation": (">", interval_hrs_ago),
 				"status": ("!=", "Failure"),
 				"owner": "Administrator",
+				"physical": bool(backup_type == "Physical"),
 			},
 			pluck="site",
 			ignore_ifnull=True,
@@ -3258,7 +3282,7 @@ class Site(Document, TagHelpers):
 			},
 			{
 				"action": "Deactivate site",
-				"description": "Deactivated site is not accessible on the internet",
+				"description": "Deactivating will put the site in maintenance mode and make it inacessible",
 				"button_label": "Deactivate",
 				"condition": self.status == "Active",
 				"doc_method": "deactivate",
