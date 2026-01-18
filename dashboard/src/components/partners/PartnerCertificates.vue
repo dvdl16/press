@@ -28,18 +28,24 @@ export default {
 			return {
 				doctype: 'Partner Certificate',
 				fields: ['free', 'certificate_link'],
+				filters: {
+					team: this.$team.doc.name,
+				},
 				columns: [
 					{
 						label: 'Member Name',
 						fieldname: 'partner_member_name',
+						width: 0.8,
 					},
 					{
 						label: 'Member Email',
 						fieldname: 'partner_member_email',
+						width: 0.8,
 					},
 					{
 						label: 'Issued On',
 						fieldname: 'issue_date',
+						width: 0.5,
 						format(value) {
 							return Intl.DateTimeFormat('en-US', {
 								year: 'numeric',
@@ -61,7 +67,7 @@ export default {
 					{
 						label: 'Version',
 						fieldname: 'version',
-						width: 0.5,
+						width: 0.4,
 						align: 'center',
 					},
 					{
@@ -102,14 +108,14 @@ export default {
 								},
 							};
 						},
+						width: 0.5,
 					},
 				],
-				documentation: 'https://frappe.io',
+				documentation: 'https://school.frappe.io',
 				actions() {
 					return [
 						{
-							label: 'Apply for Free Certification',
-							disabled: true,
+							label: 'Apply for Certification',
 							slots: {
 								prefix: icon('plus'),
 							},
@@ -126,7 +132,6 @@ export default {
 						},
 						{
 							label: 'Link Certificate',
-							disabled: true,
 							slots: {
 								prefix: icon('link'),
 							},
@@ -152,7 +157,10 @@ export default {
 							type: 'select',
 							fieldname: 'course',
 							label: 'Course',
-							options: ['', 'Framework', 'ERPNext'],
+							options: [
+								{ label: 'Framework', value: 'frappe-developer-certification' },
+								{ label: 'ERPNext', value: 'erpnext-distribution' },
+							],
 						},
 					];
 				},

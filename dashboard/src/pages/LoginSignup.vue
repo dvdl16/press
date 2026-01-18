@@ -143,6 +143,7 @@
 									I remember my password
 								</router-link>
 								<Button
+									type="submit"
 									class="mt-4"
 									:loading="$resources.resetPassword.loading"
 									variant="solid"
@@ -164,7 +165,7 @@
 								/>
 								<!-- OAuth Authentication -->
 								<template v-if="isOauthLogin && !usePassword">
-									<Button class="mt-4" variant="solid">
+									<Button class="mt-4" variant="solid" type="submit">
 										Log in with {{ oauthProviderName }}
 									</Button>
 								</template>
@@ -197,6 +198,7 @@
 										class="mt-4"
 										variant="solid"
 										:loading="$session.login.loading"
+										type="submit"
 									>
 										Log In
 									</Button>
@@ -281,6 +283,7 @@
 									class="mt-4"
 									:loading="$resources.signup.loading"
 									variant="solid"
+									type="submit"
 								>
 									Sign up with email
 								</Button>
@@ -412,9 +415,11 @@
 						v-else-if="resetPasswordEmailSent"
 					>
 						<p>
-							We have sent an email to
-							<span class="font-semibold">{{ email }}</span
-							>. Please click on the link received to reset your password.
+							You will receive an email with instructions to reset your password
+							if an account with the provided email (<span
+								class="font-medium"
+								>{{ email }}</span
+							>) exists.
 						</p>
 					</div>
 				</template>
@@ -640,6 +645,7 @@ export default {
 					} else if (this.hasForgotPassword) {
 						await this.$resources.resetPassword.submit({
 							email: this.email,
+							totp_code: this.twoFactorCode,
 						});
 					}
 				},

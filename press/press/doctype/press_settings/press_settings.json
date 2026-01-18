@@ -19,12 +19,15 @@
   "micro_debit_charge_inr",
   "column_break_wrqp",
   "usage_record_creation_batch_size",
+  "default_server_plan_type",
   "invoicing_section",
   "invoicing_column",
   "gst_percentage",
   "npo_discount",
+  "autoscale_discount",
   "column_break_qfwx",
   "print_format",
+  "ic_key",
   "stripe_settings_section",
   "stripe_publishable_key",
   "stripe_secret_key",
@@ -146,6 +149,7 @@
   "github_app_public_link",
   "github_webhook_secret",
   "github_access_token",
+  "deploy_marker",
   "section_break_41",
   "column_break_tcmy",
   "column_break_edst",
@@ -154,8 +158,9 @@
   "aws_access_key_id",
   "column_break_agig",
   "aws_secret_access_key",
-  "hetzner_section",
-  "hetzner_api_token",
+  "frappe_compute_section",
+  "orchestrator_base_url",
+  "compute_api_token",
   "twilio_section",
   "twilio_account_sid",
   "twilio_api_key_sid",
@@ -212,13 +217,18 @@
   "email_recipients",
   "section_break_nloq",
   "servers_using_alternative_http_port_for_communication",
+  "auto_scale_section",
+  "shared_directory",
+  "cool_off_period",
   "feature_flags_tab",
   "verify_cards_with_micro_charge",
   "enable_google_oauth",
   "realtime_job_updates",
+  "disable_agent_job_deduplication",
+  "disable_binlog_indexer_service",
   "column_break_rdlr",
   "disable_auto_retry",
-  "disable_agent_job_deduplication",
+  "disallow_disposable_emails",
   "enable_email_pre_verification",
   "execute_incident_action",
   "enable_server_snapshot_recovery",
@@ -230,12 +240,16 @@
   "partnership_fee_usd",
   "column_break_yxrj",
   "partnership_fee_inr",
+  "section_break_dhzi",
+  "drive_resource_link",
   "hybrid_server_tab",
   "hybrid_cluster",
   "hybrid_domain",
   "tls_renewal_queue_size",
   "code_spaces_tab",
-  "spaces_domain"
+  "spaces_domain",
+  "security_tab",
+  "wazuh_server"
  ],
  "fields": [
   {
@@ -825,6 +839,7 @@
    "read_only": 1
   },
   {
+   "default": "fc-deploy",
    "fieldname": "column_break_36",
    "fieldtype": "Column Break"
   },
@@ -1265,16 +1280,6 @@
    "label": "Usage Record Creation Batch Size"
   },
   {
-   "fieldname": "hetzner_section",
-   "fieldtype": "Section Break",
-   "label": "Hetzner"
-  },
-  {
-   "fieldname": "hetzner_api_token",
-   "fieldtype": "Password",
-   "label": "Hetzner API Token"
-  },
-  {
    "fieldname": "press_trial_plan",
    "fieldtype": "Link",
    "label": "Press Trial Plan",
@@ -1486,11 +1491,97 @@
    "fieldname": "set_redis_password",
    "fieldtype": "Check",
    "label": "Set Redis Password"
+  },
+  {
+   "default": "1",
+   "fieldname": "disallow_disposable_emails",
+   "fieldtype": "Check",
+   "label": "Disallow disposable emails"
+  },
+  {
+   "fieldname": "drive_resource_link",
+   "fieldtype": "Data",
+   "label": "Drive Resource Link"
+  },
+  {
+   "fieldname": "ic_key",
+   "fieldtype": "Password",
+   "label": "IC Key"
+  },
+  {
+   "fieldname": "section_break_dhzi",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "auto_scale_section",
+   "fieldtype": "Section Break",
+   "label": "Auto Scale"
+  },
+  {
+   "default": "/home/frappe/shared",
+   "fieldname": "shared_directory",
+   "fieldtype": "Data",
+   "label": "Shared Directory"
+  },
+  {
+   "default": "600",
+   "description": "Time between two autoscale events (up scale or down scale)",
+   "fieldname": "cool_off_period",
+   "fieldtype": "Int",
+   "label": "Cool off period"
+  },
+  {
+   "fieldname": "deploy_marker",
+   "fieldtype": "Data",
+   "label": "Deploy Marker",
+   "options": "If found in commit message deploy will be triggered"
+  },
+  {
+   "fieldname": "security_tab",
+   "fieldtype": "Tab Break",
+   "label": "Security"
+  },
+  {
+   "fieldname": "wazuh_server",
+   "fieldtype": "Data",
+   "label": "Wazuh Server"
+  },
+  {
+   "fieldname": "autoscale_discount",
+   "fieldtype": "Float",
+   "label": "Autoscale Discount"
+  },
+  {
+   "default": "1",
+   "fieldname": "disable_binlog_indexer_service",
+   "fieldtype": "Check",
+   "label": "Disable Binlog Indexer Service"
+  },
+  {
+   "fieldname": "default_server_plan_type",
+   "fieldtype": "Link",
+   "label": "Default Server Plan Type",
+   "options": "Server Plan Type"
+  },
+  {
+   "fieldname": "frappe_compute_section",
+   "fieldtype": "Section Break",
+   "label": "Frappe Compute"
+  },
+  {
+   "fieldname": "compute_api_token",
+   "fieldtype": "Password",
+   "label": "Compute API Token"
+  },
+  {
+   "fieldname": "orchestrator_base_url",
+   "fieldtype": "Data",
+   "label": "Orchestrator Base URL"
   }
  ],
  "issingle": 1,
  "links": [],
- "modified": "2025-11-03 10:28:59.626610",
+ "modified": "2026-01-08 18:10:48.053078",
  "modified_by": "Administrator",
  "module": "Press",
  "name": "Press Settings",
@@ -1509,6 +1600,7 @@
  ],
  "quick_entry": 1,
  "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],
